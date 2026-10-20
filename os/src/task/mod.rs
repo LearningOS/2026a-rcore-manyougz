@@ -23,6 +23,8 @@ pub use task::{TaskControlBlock, TaskStatus};
 
 pub use context::TaskContext;
 
+use crate::config::MAX_SYSCALL_NUM;
+
 /// The task manager, where all the tasks are managed.
 ///
 /// Functions implemented on `TaskManager` deals with all task state transitions
@@ -54,6 +56,7 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            syscall_num: [0; MAX_SYSCALL_NUM],
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -135,6 +138,21 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    /// 发生 syscall 时调用，
+    /// 目前只进行 TCB 字段下 syscall_num += 1
+    fn task_happen_syscall(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].syscall_num[syscall_id] += 1;
+    }
+
+    /// 获得当前 task 进行过的 syscall 总次数
+    fn get_task_syscall_num(&self, syscall_id: usize) -> isize {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        return inner.tasks[current].syscall_num[syscall_id];
+    }
 }
 
 /// Run the first task in task list.
@@ -156,6 +174,16 @@ fn mark_current_suspended() {
 /// Change the status of current `Running` task into `Exited`.
 fn mark_current_exited() {
     TASK_MANAGER.mark_current_exited();
+}
+
+/// 触发系统调用计数 += 1
+pub fn increase_current_task_syscall_num(syscall_id: usize) {
+    TASK_MANAGER.task_happen_syscall(syscall_id);
+}
+
+/// 获取当前 task 的系统调用总次数
+pub fn current_task_syscall_num(syscall_id: usize) -> isize {
+    return TASK_MANAGER.get_task_syscall_num(syscall_id);
 }
 
 /// Suspend the current 'Running' task and run the next task in task list.
