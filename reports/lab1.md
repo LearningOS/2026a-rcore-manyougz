@@ -9,7 +9,7 @@
 
 ## 思路
 
-多道批处理系统原型中，所有 app 虽然全部加载于内存（我参考的王道 2027 操作系统考研复习书中还有脱机 I/O 的外存受主机调控参与，这里先简述，link_app.S 中是一共加载了 10 个 app），宏观并行但实际微观中还是串行，每一个时刻只有一个 task 在运行，故选择直接在 `TaskCB` 中扩展字段（`pub syscall_num: [isize; MAX_SYSCALL_NUM]`）进行统计，又由于 Rust HashMap 等 KV 数据结构类型在 nostd 模式下需要 alloc crate ，所以采用类似位图的方式来以 index 为 syscall_id(key) 对应位上的 isize 值为该对应 syscall_id 的调用总次数，不够这种方案好像过度增大了 TaskCB 的大小，不知道。
+多道批处理系统原型中，所有 app 虽然全部加载于内存（我参考的王道 2027 操作系统考研复习书中还有脱机 I/O 的外存受主机调控参与，这里先简述，link_app.S 中是一共加载了 10 个 app），宏观并行但实际微观中还是串行，每一个时刻只有一个 task 在运行，故选择直接在 `TaskCB` 中扩展字段（`pub syscall_num: [isize; MAX_SYSCALL_NUM]`）进行统计，又由于 Rust HashMap 等 KV 数据结构类型在 nostd 模式下需要 alloc crate ，所以采用类似位图的方式来以 index 为 syscall_id(key) 对应位上的 isize 值为该对应 syscall_id 的调用总次数，不过这种方案好像过度增大了 TaskCB 的大小，不知道是否会影响性能。
 
 ## RISC-V 指令集 note
 
