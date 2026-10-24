@@ -14,6 +14,7 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
+use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
@@ -23,6 +24,8 @@ use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
 
 pub use context::TaskContext;
+
+use crate::mm::*;
 
 /// The task manager, where all the tasks are managed.
 ///
@@ -120,6 +123,26 @@ impl TaskManager {
         inner.tasks[inner.current_task].get_user_token()
     }
 
+    /// 发生 syscall 时，当前 task 对应的计数 += 1
+    fn task_happen_syscall(&self, syscall_id: usize) {
+        if syscall_id >= MAX_SYSCALL_NUM {
+            return;
+        }
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].syscall_num[syscall_id] += 1;
+    }
+
+    /// 获取当前 task 对指定 syscall 的调用次数
+    fn get_task_syscall_num(&self, syscall_id: usize) -> isize {
+        if syscall_id >= MAX_SYSCALL_NUM {
+            return 0;
+        }
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].syscall_num[syscall_id]
+    }
+
     /// Get the current 'Running' task's trap contexts.
     fn get_current_trap_cx(&self) -> &'static mut TrapContext {
         let inner = self.inner.exclusive_access();
@@ -131,6 +154,20 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let cur = inner.current_task;
         inner.tasks[cur].change_program_brk(size)
+    }
+
+    /// 追加新的 MemorySet
+    pub fn change_current_memoery_set(&self, start_va: VirtAddr, end_va: VirtAddr, mem_perm: MapPermission) {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].memory_set.insert_framed_area(start_va, end_va, mem_perm);
+    }
+
+    /// 取消已经分配的 MemorySet
+    pub fn unmap_current_user_range(start: VirtPageNum, end: VirtPageNum) -> bool {
+        let mut inner = TASK_MANAGER.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].memory_set.unmap_user_range(start, end)
     }
 
     /// Switch current `Running` task to the task we have found,
@@ -193,6 +230,16 @@ pub fn current_user_token() -> usize {
     TASK_MANAGER.get_current_token()
 }
 
+/// 触发系统调用计数 += 1
+pub fn increase_current_task_syscall_num(syscall_id: usize) {
+    TASK_MANAGER.task_happen_syscall(syscall_id);
+}
+
+/// 获取当前 task 对指定系统调用的调用次数
+pub fn current_task_syscall_num(syscall_id: usize) -> isize {
+    TASK_MANAGER.get_task_syscall_num(syscall_id)
+}
+
 /// Get the current 'Running' task's trap contexts.
 pub fn current_trap_cx() -> &'static mut TrapContext {
     TASK_MANAGER.get_current_trap_cx()
@@ -201,4 +248,9 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// 追加 MemorySet
+pub fn change_task_memory_set(start_va: VirtAddr, end_va: VirtAddr, mem_perm: MapPermission) {
+    TASK_MANAGER.change_current_memoery_set(start_va, end_va, mem_perm)
 }

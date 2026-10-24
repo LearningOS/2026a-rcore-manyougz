@@ -262,6 +262,90 @@ impl MemorySet {
             false
         }
     }
+
+        /// 取消 [start, end) 内的用户 Framed 映射
+    pub fn unmap_user_range(&mut self, start: VirtPageNum, end: VirtPageNum) -> bool {
+        if start >= end {
+            return start == end;
+        }
+
+        // 只检查，全部范围
+        for vpn in VPNRange::new(start, end) {
+            let pte = match self.page_table.translate(vpn) {
+                Some(pte) if pte.is_valid() => pte,
+                _ => return false,
+            };
+
+            // 排除 trampoline、TrapContext 等非用户映射
+            if !pte.flags().contains(PTEFlags::U) {
+                return false;
+            }
+
+            // 确认这是由某个 MapArea 持有的独占数据页
+            let owned = self.areas.iter().any(|area| {
+                area.map_type == MapType::Framed
+                    && area.vpn_range.get_start() <= vpn
+                    && vpn < area.vpn_range.get_end()
+                    && area.data_frames.contains_key(&vpn)
+            });
+
+            if !owned {
+                return false;
+            }
+        }
+
+        // release 映射
+        let old_areas = core::mem::take(&mut self.areas);
+        let mut remaining = Vec::new();
+
+        for mut area in old_areas {
+            let area_start = area.vpn_range.get_start();
+            let area_end = area.vpn_range.get_end();
+
+            // 计算这个 MapArea 与待删除范围的交集
+            let cut_start = area_start.max(start);
+            let cut_end = area_end.min(end);
+
+            if cut_start >= cut_end {
+                remaining.push(area);
+                continue;
+            }
+
+            for vpn in VPNRange::new(cut_start, cut_end) {
+                // 清除叶子 PTE
+                self.page_table.unmap(vpn);
+
+                // 移除并析构 FrameTracker，回收对应数据页框
+                // 味大 RAII
+                drop(area.data_frames.remove(&vpn));
+            }
+
+            // 如果右边还有剩余，把右侧页框的所有权移入新区域
+            let right = if cut_end < area_end {
+                Some(MapArea {
+                    vpn_range: VPNRange::new(cut_end, area_end),
+                    data_frames: area.data_frames.split_off(&cut_end),
+                    map_type: area.map_type,
+                    map_perm: area.map_perm,
+                })
+            } else {
+                None
+            };
+
+            // 如果左边还有剩余，保留原区域作为左侧区域
+            if area_start < cut_start {
+                area.vpn_range = VPNRange::new(area_start, cut_start);
+                remaining.push(area);
+            }
+
+            if let Some(right) = right {
+                remaining.push(right);
+            }
+        }
+
+        self.areas = remaining;
+        true
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
