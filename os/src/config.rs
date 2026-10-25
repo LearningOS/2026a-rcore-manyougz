@@ -13,6 +13,10 @@ pub const KERNEL_HEAP_SIZE: usize = 0x200_0000;
 pub const PAGE_SIZE: usize = 0x1000;
 /// page size bits: 12
 pub const PAGE_SIZE_BITS: usize = 0xc;
+/// stride 的总步长，保证除以任意合法的 isize 优先级后仍然至少为 1
+pub const BIG_STRIDE: usize = 1usize << (usize::BITS - 1);
+/// 新进程的默认优先级
+pub const DEFAULT_PRIORITY: usize = 16;
 /// the virtual addr of trapoline
 pub const TRAMPOLINE: usize = usize::MAX - PAGE_SIZE + 1;
 /// the virtual addr of trap context
