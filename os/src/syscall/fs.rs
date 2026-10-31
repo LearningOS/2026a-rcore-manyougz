@@ -1,6 +1,6 @@
 //! File and filesystem-related syscalls
-use crate::fs::{open_file, OpenFlags, Stat};
-use crate::mm::{translated_byte_buffer, translated_str, UserBuffer};
+use crate::fs::*;
+use crate::mm::*;
 use crate::task::{current_task, current_user_token};
 
 pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
@@ -75,29 +75,63 @@ pub fn sys_close(fd: usize) -> isize {
     0
 }
 
-/// YOUR JOB: Implement fstat.
-pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_fstat NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+/// 获取 fd 对应文件的状态，按用户页表写回 st
+pub fn sys_fstat(fd: usize, st: *mut Stat) -> isize {
+    trace!("kernel:pid[{}] sys_fstat", current_task().unwrap().pid.0);
+    // 常规检查
+    let task = current_task().unwrap();
+    let inner = task.inner_exclusive_access();
+    if fd >= inner.fd_table.len() {
+        return -1;
+    }
+    let file = match &inner.fd_table[fd] {
+        Some(file) => file.clone(),
+        None => return -1,
+    };
+    // release TCB 的借用
+    drop(inner);
+    let stat = match file.stat() {
+        Some(stat) => stat,
+        None => return -1,
+    };
+    // Stat 的字段和 pad 都已初始化，接 ultre 版老逻辑 copy_to_user
+    let data = unsafe {
+        core::slice::from_raw_parts(
+            &stat as *const Stat as *const u8,
+            core::mem::size_of::<Stat>(),
+        )
+    };
+    if copy_to_user(current_user_token(), st as *mut u8, data) {
+        0
+    } else {
+        -1
+    }
 }
 
-/// YOUR JOB: Implement linkat.
-pub fn sys_linkat(_old_name: *const u8, _new_name: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_linkat NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+/// 为已有文件建立新的硬链接
+pub fn sys_linkat(old_name: *const u8, new_name: *const u8) -> isize {
+    trace!("kernel:pid[{}] sys_linkat", current_task().unwrap().pid.0);
+    let token = current_user_token();
+    let old_name = translated_str(token, old_name);
+    let new_name = translated_str(token, new_name);
+    // 常规检查，旧文件不存在、新名字已存在时失败 -1
+    if old_name == new_name {
+        return -1;
+    }
+    if link_file(old_name.as_str(), new_name.as_str()) {
+        0
+    } else {
+        -1
+    }
 }
 
-/// YOUR JOB: Implement unlinkat.
-pub fn sys_unlinkat(_name: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_unlinkat NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+/// 取消一个文件名与 inode 的关联
+pub fn sys_unlinkat(name: *const u8) -> isize {
+    trace!("kernel:pid[{}] sys_unlinkat", current_task().unwrap().pid.0);
+    let name = translated_str(current_user_token(), name);
+    if unlink_file(name.as_str()) {
+        0
+    } else {
+        -1
+    }
 }

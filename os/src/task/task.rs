@@ -1,9 +1,9 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::TRAP_CONTEXT_BASE;
+use crate::config::{DEFAULT_PRIORITY, TRAP_CONTEXT_BASE};
 use crate::fs::{File, Stdin, Stdout};
-use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::mm::{MapPermission, MemorySet, PhysPageNum, VirtAddr, VirtPageNum, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
@@ -51,6 +51,12 @@ pub struct TaskControlBlockInner {
 
     /// Maintain the execution status of the current process
     pub task_status: TaskStatus,
+
+    /// 当前 task 的相对运行长度，调度时选 stride 最小的
+    pub stride: usize,
+
+    /// 当前 task 的优先级，越大则每次增加的 pass 越小
+    pub priority: usize,
 
     /// Application address space
     pub memory_set: MemorySet,
@@ -121,6 +127,8 @@ impl TaskControlBlock {
                     base_size: user_sp,
                     task_cx: TaskContext::goto_trap_return(kernel_stack_top),
                     task_status: TaskStatus::Ready,
+                    stride: 0,
+                    priority: DEFAULT_PRIORITY,
                     memory_set,
                     parent: None,
                     children: Vec::new(),
@@ -163,6 +171,10 @@ impl TaskControlBlock {
         let mut inner = self.inner_exclusive_access();
         // substitute memory_set
         inner.memory_set = memory_set;
+        // exec 已经换了地址空间，堆的位置也要跟着新程序重新设置
+        inner.base_size = user_sp;
+        inner.heap_bottom = user_sp;
+        inner.program_brk = user_sp;
         // update trap_cx ppn
         inner.trap_cx_ppn = trap_cx_ppn;
         // initialize trap_cx
@@ -209,6 +221,8 @@ impl TaskControlBlock {
                     base_size: parent_inner.base_size,
                     task_cx: TaskContext::goto_trap_return(kernel_stack_top),
                     task_status: TaskStatus::Ready,
+                    stride: 0,
+                    priority: DEFAULT_PRIORITY,
                     memory_set,
                     parent: Some(Arc::downgrade(self)),
                     children: Vec::new(),
@@ -234,6 +248,25 @@ impl TaskControlBlock {
     /// get pid of process
     pub fn getpid(&self) -> usize {
         self.pid.0
+    }
+
+    /// 追加新的 MemorySet
+    pub fn change_current_memoery_set(
+        &self,
+        start_va: VirtAddr,
+        end_va: VirtAddr,
+        mem_perm: MapPermission,
+    ) {
+        let mut inner = self.inner_exclusive_access();
+        inner
+            .memory_set
+            .insert_framed_area(start_va, end_va, mem_perm);
+    }
+
+    /// 取消已经分配的 MemorySet
+    pub fn unmap_current_user_range(&self, start: VirtPageNum, end: VirtPageNum) -> bool {
+        let mut inner = self.inner_exclusive_access();
+        inner.memory_set.unmap_user_range(start, end)
     }
 
     /// change the location of the program break. return None if failed.

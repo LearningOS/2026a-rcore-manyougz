@@ -158,6 +158,56 @@ impl PageTable {
     }
 }
 
+/// ultra 版 va -> pa 以及写入 data，自动完成跨页分别读写
+pub fn copy_to_user(token: usize, ptr: *mut u8, data: &[u8]) -> bool {
+    if data.is_empty() {
+        return true;
+    }
+    let start = ptr as usize;
+    // 溢出检测
+    let end = match start.checked_add(data.len()) {
+        Some(end) => end,
+        None => return false,
+    };
+    // VirtAddr 会截断高位，先检查传进来的地址本身是否符合 Sv39
+    if usize::from(VirtAddr::from(start)) != start
+        || usize::from(VirtAddr::from(end - 1)) != end - 1
+        || ((start ^ (end - 1)) & (1usize << 38)) != 0
+    {
+        return false;
+    }
+    let page_table = PageTable::from_token(token);
+    let mut current = start;
+    while current < end {
+        let va = VirtAddr::from(current);
+        let pte = match page_table.translate(va.floor()) {
+            Some(pte) => pte,
+            None => return false,
+        };
+        if !pte
+            .flags()
+            .contains(PTEFlags::V | PTEFlags::U | PTEFlags::R | PTEFlags::W)
+        {
+            return false;
+        }
+        current += (crate::config::PAGE_SIZE - va.page_offset()).min(end - current);
+    }
+
+    // 检查通过后再写，后面的页不合法时不会只写了一半
+    let mut current = start;
+    let mut copied = 0;
+    while current < end {
+        let va = VirtAddr::from(current);
+        let ppn = page_table.translate(va.floor()).unwrap().ppn();
+        let offset = va.page_offset();
+        let len = (crate::config::PAGE_SIZE - offset).min(end - current);
+        ppn.get_bytes_array()[offset..offset + len].copy_from_slice(&data[copied..copied + len]);
+        current += len;
+        copied += len;
+    }
+    true
+}
+
 /// Translate&Copy a ptr[u8] array with LENGTH len to a mutable u8 Vec through page table
 pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&'static mut [u8]> {
     let page_table = PageTable::from_token(token);
